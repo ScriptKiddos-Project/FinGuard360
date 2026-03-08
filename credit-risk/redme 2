@@ -1,0 +1,200 @@
+Credit Risk Modeling — Home Credit Default Risk
+Overview
+
+This project develops a robust, reproducible credit‑risk model on the Home Credit Default Risk competition dataset (Kaggle). The goal is to estimate each applicant’s probability of default (PD) so that lending decisions can be made with confidence. We combine sound business understanding with modern machine‑learning techniques and emphasise interpretability and calibration.
+
+Business Objective
+
+Financial institutions must decide whether to grant credit and at what limit. An accurate PD model allows banks to:
+
+Score applicants for approval, decline or manual review.
+
+Set credit limits and pricing based on estimated risk.
+
+Prioritise collections and monitoring by identifying the riskiest customers.
+
+Key metrics used in this project include the area under the ROC curve (AUC), the Kolmogorov–Smirnov statistic (KS), and business‑oriented measures such as Precision@k and Recall@k (performance within the riskiest 20 % of customers). We also evaluate calibration (Brier score and reliability curves) because probability estimates need to reflect true default rates.
+
+Data
+
+The primary data come from application_train.csv and application_test.csv, which contain applicant information such as demographic attributes, contract details, and credit history. Additional tables (bureau.csv, previous_application.csv, installments_payments.csv, etc.) provide historical financial behaviour. A column description file (HomeCredit_columns_description.csv) is used to document and categorise variables.
+
+Handling Missing Values
+
+Many variables (especially those related to real‑estate information) have high missing rates (>60 %). We treat missingness systematically within a scikit‑learn pipeline:
+
+Numeric features – imputed with the median and standardised using the RobustScaler (less sensitive to outliers). We also create binary “_missing_flag” indicators for highly missing columns to allow the model to learn if missingness itself carries signal.
+
+Low‑cardinality categorical features – imputed with “Unknown” and one‑hot encoded.
+
+High‑cardinality categorical features – target‑encoded on the training folds only, to avoid leakage.
+
+All preprocessing is wrapped in a ColumnTransformer and a Pipeline to ensure transformations are applied consistently during cross‑validation and in production.
+
+Repository Structure
+
+The project is organised for clarity and reproducibility:
+
+credit‑risk‑model/
+├── app/           # API endpoints (FastAPI) and Streamlit app for interactive scoring
+├── artifacts/     # Persisted objects: preprocessor, models (.joblib), SHAP values, thresholds
+├── dashboard/     # Reporting assets (e.g., Power BI report)
+├── data/          # Data files (not versioned here; see instructions below)
+├── images/        # Illustrative plots and figures
+├── notebooks/     # Jupyter notebooks for EDA, modelling and experiments
+├── scripts/       # Python scripts to train models, score new data, etc.
+├── tests/         # Unit tests for preprocessing and model scoring
+└── README.md      # This document
+
+
+Note: To keep the repository light, the full raw datasets are not stored in Git. See the Data Acquisition section for download instructions and sample data usage.
+
+Environment & Installation
+
+This project uses Python 3.10 with common data‑science libraries such as Pandas, NumPy, scikit‑learn, LightGBM, Optuna, and SHAP. The recommended setup is via a virtual environment or Conda. For example:
+
+# create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate  # on Windows use .venv\Scripts\activate
+
+# install dependencies
+pip install -r requirements.txt
+
+# (optional) install Jupyter
+pip install notebook
+
+# start Jupyter for exploration
+jupyter notebook notebooks/01_eda.ipynb
+
+Data Acquisition
+
+The full training and test data (≈700 MB) cannot be stored in this repository due to GitHub’s size limits. To reproduce the analysis:
+
+Create a data/raw/ directory at the project root.
+
+Download the Home Credit Default Risk dataset from Kaggle and extract all files into data/raw/.
+
+For quick experimentation or demonstration, use the sample files in data/sample/, which contain 1 000 rows of the original datasets.
+
+Example download command using Kaggle CLI:
+
+# ensure kaggle is installed and configured (`pip install kaggle` and set API credentials)
+kaggle competitions download -c home-credit-default-risk -p data/raw --unzip
+
+Exploratory Data Analysis (EDA)
+
+Our EDA notebooks cover:
+
+Univariate analysis – distributions, summary statistics and outlier detection.
+
+Bivariate analysis – relationships between features and the target variable (boxplots, violin plots, correlation heatmaps).
+
+Feature dictionary consolidation – merging the column description with observed data types and missing‑value rates to identify undocumented or problematic columns.
+
+The notebooks reside in the notebooks/ directory and are numbered chronologically (e.g. 01_eda.ipynb, 02_preprocessing.ipynb, 03_modelling.ipynb).
+
+Modelling
+Baseline – Logistic Regression
+
+A logistic regression with L2 regularisation and class weights is used as a simple, interpretable baseline. The model is trained via stratified 5‑fold cross‑validation within a scikit‑learn pipeline, ensuring that preprocessing, imputation and encoding occur inside each training fold only. Results:
+
+Metric	Baseline (LogReg)
+AUC	0.746
+KS	0.365
+Precision@20%	0.200
+Recall@20%	0.500
+
+This baseline demonstrates solid separation ability but suffers from a calibration bias (it tends to over‑predict the probability of default). Elastic net regularisation was also tried but did not improve performance enough to justify its complexity.
+
+Gradient‑Boosting – LightGBM with Optuna
+
+To improve predictive power, we transition to LightGBM, a gradient‑boosting tree model that handles high‑dimensional, sparse data efficiently. Hyperparameters are tuned using Optuna, and the pipeline is carefully constructed to avoid data leakage:
+
+Preprocessing is performed using preprocessor.fit/transform outside of the pipeline because LightGBM’s fit method does not accept scikit‑learn’s eval_set with transformers.
+
+Early stopping is implemented via callbacks (lgb.early_stopping) to prevent overfitting.
+
+Cross‑validated results (approximate averages across folds):
+
+Metric	LightGBM
+AUC	~0.761
+KS	~0.391
+Precision@20%	~0.212
+Recall@20%	~0.526
+
+The LightGBM model achieves better discrimination and higher lift in the top‑risk decile. Full fold‑by‑fold results are available in the notebooks/03_modelling.ipynb notebook.
+
+Probability Calibration
+
+After training, we calibrate the raw LightGBM probabilities using Isotonic Regression applied on the out‑of‑fold predictions. This step improves the Brier score and aligns the reliability curve closer to the ideal diagonal, producing better calibrated PD estimates. Both the calibrated and uncalibrated reliability curves can be plotted for comparison.
+
+Explainability
+
+Interpretability is essential in risk modeling for regulatory and business reasons. We use SHAP (SHapley Additive exPlanations) to generate both global and local explanations:
+
+Global SHAP summary plots identify the most influential features across all applicants. Examples include time employed, income level, credit history length and instalment ratios.
+
+Local SHAP force plots provide case‑by‑case explanations for individual applicants, helping credit officers understand why a particular PD is high or low.
+
+Artifacts such as SHAP values and feature importance charts are stored in the artifacts/ directory.
+
+Results & Discussion
+
+Overall, the LightGBM model with tuned hyperparameters and post‑processing calibration outperforms the logistic baseline. The improvements in AUC, KS and top‑percentile metrics translate to better decision‑making. However, modelling is an iterative process; additional feature engineering and external data sources are likely to yield further gains.
+
+Future Work
+
+The next phases of this project include:
+
+Feature Engineering – aggregate information from supplementary tables (bureau, previous_application, installments_payments, etc.) to create new features such as average payment delay, credit utilisation ratios and temporal recency measures. Such engineered features often provide a significant lift.
+
+Threshold Optimisation & Score Binning – determine optimal probability cutoffs or score bands (Very High, High, Medium, Low) by balancing detection rate and operational cost. Business context (e.g. cost of false positives vs. false negatives) guides this choice.
+
+Model Monitoring & Drift Detection – set up pipelines (e.g. with Evidently or WhyLabs) to monitor prediction drift, data quality drift and performance drift once the model is deployed. Define retraining triggers based on drift metrics.
+
+Experiment Tracking – integrate MLflow or a similar tool to log experiments, parameters and metrics for reproducibility and governance.
+
+Deployment – containerise the scoring pipeline with Docker and expose it through a FastAPI microservice. Build a Streamlit or Power BI dashboard to visualise applicant profiles, predictions and SHAP explanations interactively.
+
+How to Use this Repository
+
+Set up the environment as described above.
+
+Download data to data/raw/ (or use data/sample/ for quick tests).
+
+Run the notebooks in the notebooks/ folder to reproduce the EDA and modelling steps. They are numbered to indicate a recommended order.
+
+Train and evaluate models by running the Python scripts in scripts/, for example:
+
+python scripts/train_lgbm.py \
+  --data_path data/raw/application_train.csv \
+  --output_dir artifacts/
+
+python scripts/calibrate.py \
+  --predictions artifacts/oof_predictions.csv \
+  --output_dir artifacts/
+
+python scripts/compute_shap.py \
+  --model_path artifacts/lgbm_model.joblib \
+  --preprocessor_path artifacts/preprocessor.joblib \
+  --output_dir artifacts/
+
+
+Example scripts are provided for training, scoring and generating SHAP explanations; adjust paths and parameters as needed.
+
+Serve the model via FastAPI:
+
+uvicorn app.api:app --reload
+
+
+Then send a POST request with applicant data to receive a PD prediction and SHAP‑based explanation.
+
+Licensing
+
+This project is released under the MIT License. You may reuse and adapt the code with proper attribution. Dataset usage is governed by the Kaggle competition’s terms of use; do not redistribute the raw data.
+
+Contact
+
+Developed by Luiz Otávio Marangão. Feel free to reach out via LinkedIn
+ or GitHub
+ for questions, feedback or collaboration opportunities.
